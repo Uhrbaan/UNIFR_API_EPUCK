@@ -159,22 +159,29 @@ class WifiEpuck(Epuck):
         # stop calibration
         self.__command[2] = 0
 
+    # This is the slowest function of the whole class.
+    # ~57% of time is spent on recieving (sck.recv(...))
+    # The other 43% are spent on nothing (computing)
+    # My bet is on the join.
     def __receive_part_from_robot(self, msg_len):
         """
         Receive a new packet from the robot to the computer
         """
 
-        # receiving data in fragments
-        chunks = []
+        buffer = bytearray(msg_len)
+        view = memoryview(buffer) # for efficient slicing
+
         bytes_recd = 0
+
         try:
             while bytes_recd < msg_len:
-                chunk = self.__sock.recv(min(msg_len - bytes_recd, 2048))
-                if chunk == b'':
+                bytes_in_chunk = self.__sock.recv_into(view[bytes_recd:])
+                if bytes_in_chunk == 0:
                     raise RuntimeError("socket connection broken")
-                chunks.append(chunk)
-                bytes_recd = bytes_recd + len(chunk)
-            return b''.join(chunks)
+                
+                bytes_recd = bytes_recd + bytes_in_chunk
+            
+            return buffer
         except:
             print('\033[91m'+'Lost connection of : ' +
                   str(self.get_ip())+'\033[0m')

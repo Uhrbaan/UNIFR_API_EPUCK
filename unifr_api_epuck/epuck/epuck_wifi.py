@@ -92,6 +92,7 @@ class WifiEpuck(Epuck):
         self.__sensor_queue = queue.Queue(maxsize=10)
         self.__recv_thread = None
         self.__send_thread = None
+        self.__use_threaded_communication = True
  
 
         # camera init specific for Real Robot
@@ -130,7 +131,7 @@ class WifiEpuck(Epuck):
         while trials < self.MAX_NUM_CONN_TRIALS:
             self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # self.__sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # self.__sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) # Disable Nagel algorithm - doesn't change anything
             self.__sock.settimeout(10)  
             try:
                 self.__sock.connect((ip_address, self.TCP_PORT))
@@ -188,7 +189,9 @@ class WifiEpuck(Epuck):
         self.__command[19] = 0  # LED8 blue
         self.__command[20] = 0  # speaker
 
+        # if not self.__use_threaded_communication:
         self.go_on()
+        
         print('Battery left :'+ str(self.get_battery_level()))
 
     def get_id(self):
@@ -305,6 +308,7 @@ class WifiEpuck(Epuck):
                 break
         print("Stopping sending thread.")
 
+
     # Disclaimer: code mostyl AI-generated
     def __receiving_loop(self):
         """Dedicated loop for receiving data."""
@@ -360,7 +364,8 @@ class WifiEpuck(Epuck):
 
         :returns: True (if no problem occurs)
         """
-        super().go_on()
+        if not self.__use_threaded_communication:
+            super().go_on()
         # check return is a boolean to say if all went ok.
         self.__send_to_robot()
         check_return = self.__receive_from_robot()
@@ -982,13 +987,16 @@ class WifiEpuck(Epuck):
             self.disable_sensors()
             self.disable_front_led()
             self.disable_body_led()
+            self.__stop_communication = True
 
             for _ in range(10):
                 self.set_speed(0, 0)
                 self.go_on()
 
             self.sleep(1)
-
+            self.__recv_thread.join(3)
+            self.__send_thread.join(3)
+            self.__sock.shutdown(socket.SHUT_RDWR)
             self.__sock.close()
             sys.exit(0)
         #print('Robot cleaned')
