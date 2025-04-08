@@ -12,6 +12,7 @@ import os
 import cv2
 import signal
 
+logging.basicConfig(level=logging.DEBUG)
 
 ###############
 #  Detection  #
@@ -79,6 +80,10 @@ class WifiEpuck(Epuck):
         self.MAX_NUM_CONN_TRIALS = 5
         self.TCP_PORT = 1000  # This is fixed.
 
+        # For UDP communication
+        self.UDP_PORT = 1000
+        self.USE_UDP = True
+
 
         # communication Robot <-> Computer
         self.__sock = 0
@@ -99,7 +104,10 @@ class WifiEpuck(Epuck):
 
 
         # start communication with computer
-        self.__tcp_init()
+        if self.USE_UDP:
+            self.__udp_init()
+        else:
+            self.__tcp_init()
         self.__init_command()
 
         signal.signal(signal.SIGINT, self.__stopcontroller_handler)   
@@ -150,6 +158,22 @@ class WifiEpuck(Epuck):
 
         print("Connected to " + ip_address)
         print("\r\n")       
+
+    def __udp_init(self):
+        ip_address = self.ip_addr
+        print(f"Preparing to send UDP to {ip_address}:{self.UDP_PORT}")
+
+        try:
+            self.__sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except socket.error as e:
+            logging.error(f"Error creating UDP socket: {e}")
+            self.__sock = None
+            exit(1)
+        
+        self.__sock.settimeout(10)
+        print("Connected to " + ip_address)
+        print("\r\n")
 
 
     def __init_command(self):
@@ -218,6 +242,23 @@ class WifiEpuck(Epuck):
         # stop calibration
         self.__command[2] = 0
 
+    def __send_to_robot_udp(self):
+        byte_send = 0
+
+        while byte_send < self.COMMAND_PACKET_SIZE:
+            try:
+                sent = self.__sock.sendto(self.__command[byte_send:], (self.ip_addr, self.UDP_PORT))
+                if sent == 0:
+                    raise RuntimeError("Send to e-puck error")
+            except socket.error as e:
+                logging.error(f"Error sending UDP data: {e}")
+
+            byte_send = byte_send + sent
+            logging.debug(f"Sent {byte_send} bytes over UDP.")
+
+        # stop calibration
+        self.__command[2] = 0
+
     def __receive_part_from_robot(self, msg_len):
         """
         Receive a new packet from the robot to the computer
@@ -248,6 +289,38 @@ class WifiEpuck(Epuck):
                   str(self.get_ip())+'\033[0m')
             sys.exit(1)
 
+    def __receive_part_from_robot_udp(self, msg_len):
+        """
+        Receive a new packet from the robot to the computer
+        """
+
+        # receiving data in fragments
+        chunks = []
+        bytes_recd = 0
+        try:
+            while bytes_recd < msg_len:
+                # old code
+                #chunk = self.__sock.recv(min(msg_len - bytes_recd, 2048))
+                #if chunk == b'':
+                #    raise RuntimeError("socket connection broken")
+            
+                trials = 0
+                chunk = b''
+                while chunk == b'':
+                    trials += 1
+                    chunk, addr = self.__sock.recvfrom(min(msg_len - bytes_recd, 2048))
+                    if chunk == b'' and trials == self.MAX_NUM_CONN_TRIALS:
+                        raise RuntimeError("socket connection broken")
+                chunks.append(chunk)
+                bytes_recd = bytes_recd + len(chunk)
+            data = b''.join(chunks)
+            logging.debug(f"recieved over UDP: {chunk}")
+            return data
+        except:
+            print('\033[91m'+'Lost connection of : ' +
+                  str(self.get_ip())+'\033[0m')
+            sys.exit(1)
+
     def __receive_from_robot(self):
         """
         Receives the packet from the robot
@@ -259,12 +332,18 @@ class WifiEpuck(Epuck):
 
         # camera information
         if header == bytearray([1]):
-            self.__rgb565 = self.__receive_part_from_robot(self.IMAGE_PACKET_SIZE)
+            if self.USE_UDP:
+                self.__rgb565 = self.__receive_part_from_robot_udp(self.IMAGE_PACKET_SIZE)
+            else:
+                self.__rgb565 = self.__receive_part_from_robot(self.IMAGE_PACKET_SIZE)
             self.__camera_updated = True
 
         # sensors information
         elif header == bytearray([2]):
-            self.sensors = self.__receive_part_from_robot(self.SENSORS_PACKET_SIZE)
+            if self.USE_UDP:
+                self.sensors = self.__receive_part_from_robot_udp(self.IMAGE_PACKET_SIZE)
+            else:
+                self.sensors = self.__receive_part_from_robot(self.IMAGE_PACKET_SIZE)
 
         # no information
         else:
@@ -280,7 +359,11 @@ class WifiEpuck(Epuck):
         """
         super().go_on()
         # check return is a boolean to say if all went ok.
-        self.__send_to_robot()
+        if self.USE_UDP:
+            self.__send_to_robot_udp()
+        else:
+            self.__send_to_robot()
+        
         check_return = self.__receive_from_robot()
 
 
