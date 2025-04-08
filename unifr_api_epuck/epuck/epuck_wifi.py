@@ -11,6 +11,8 @@ import torch
 import os
 import cv2
 import signal
+import queue
+import threading
 
 
 ###############
@@ -83,6 +85,13 @@ class WifiEpuck(Epuck):
         # communication Robot <-> Computer
         self.__sock = 0
         self.__command = bytearray([0] * self.COMMAND_PACKET_SIZE)
+
+        # threaded communication
+        # NOTE: technically, using beginning underscore '__' is forbidden. We should use single beginning underscore.
+        self.__stop_communication = False
+        self.__sensor_queue = queue.Queue(maxsize=10)
+        self.__recv_thread = None
+        self.__send_thread = None
  
 
         # camera init specific for Real Robot
@@ -121,7 +130,7 @@ class WifiEpuck(Epuck):
         while trials < self.MAX_NUM_CONN_TRIALS:
             self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.__sock.settimeout(10)  # non-blocking socket
+            self.__sock.settimeout(10)  
             try:
                 self.__sock.connect((ip_address, self.TCP_PORT))
             except socket.timeout as err:
@@ -130,7 +139,7 @@ class WifiEpuck(Epuck):
                 logging.error(err)
                 trials += 1
                 continue
-            except socket.OSError as err:
+            except socket.error as err:
                 self.__sock.close()
                 logging.error("OS error from " + ip_address + ":")
                 logging.error(err)
@@ -150,7 +159,6 @@ class WifiEpuck(Epuck):
 
         print("Connected to " + ip_address)
         print("\r\n")       
-
 
     def __init_command(self):
         """
@@ -271,6 +279,75 @@ class WifiEpuck(Epuck):
             return False
 
         return True
+
+    # Disclaimer: mostly AI-generated
+    def __sending_loop(self):
+        print("starting threaded sending...")
+        while not self.__stop_communication:
+            try:
+                # Prepare the command if necessary (e.g., keepalive or specific instruction)
+                # self.__command[0] = ... # Modify command if needed
+                # Lock if accessing shared command buffer potentially modified elsewhere
+                # with self.lock:
+                #    command_copy = self.__command[:] # Make copy if needed
+                self.__send_to_robot() # Send the current command buffer
+                # Optional: Add a small sleep if sending too fast causes issues
+                # time.sleep(0.001)
+            except (RuntimeError, socket.error, BrokenPipeError) as e:
+                print(f"\033[91mError in sending thread: {e}\033[0m")
+                self._stop_event.set(self.sensors) # Signal other threads to stop
+                break
+            except Exception as e:
+                print(f"\033[91mUnexpected error in sending thread: {e}\033[0m")
+                self._stop_event.set()
+                break
+        print("Stopping sending thread.")
+
+# Disclaimer: code mostyl AI-generated
+def __receiving_loop(self):
+    """Dedicated loop for receiving data."""
+    print("Starting receiving thread...")
+    while not self.__stop_communication:
+        try:
+            # __receive_from_robot handles header reading and then data reading
+            if self.__receive_from_robot():
+                # Data received successfully (either image or sensors)
+                # Put sensor data into a queue for the main thread
+                # Handle image data if needed
+                if self.sensors: # Check if sensor data was updated
+                    try:
+                        # Use a non-blocking put with timeout or check queue size
+                        # to prevent blocking if main thread doesn't consume fast enough
+                        self.__sensor_queue.put_nowait()
+                    except queue.Full:
+                        # Optional: Handle queue full (e.g., discard oldest, log warning)
+                        logging.debug("Warning: Sensor queue full, discarding data.")
+                        pass
+                # Add similar handling for self.__rgb565 if needed
+            else:
+                # Handle case where header was unknown (optional)
+                print("Received unknown packet header")
+                pass
+        except (RuntimeError, socket.error, BrokenPipeError) as e:
+            print(f"\033[91mError in receiving thread: {e}\033[0m")
+            self._stop_event.set() # Signal other threads to stop
+            break
+        except Exception as e:
+            print(f"\033[91mUnexpected error in receiving thread: {e}\033[0m")
+            self._stop_event.set()
+            break
+    print("Stopping receiving thread.")
+
+    def start_threaded_communication(self):
+        """Initialize TCP and start communication threads."""
+        self.__stop_communication = False
+        self.__recv_thread = threading.Thread(target=self.__receiving_loop, daemon=True)
+        self.__send_thread = threading.Thread(target=self.__sending_loop, daemon=True)
+
+        self.__recv_thread.start()
+        self.__send_thread.start()
+
+        print("Started threaded communication")
 
     def go_on(self):
         """
@@ -537,6 +614,15 @@ class WifiEpuck(Epuck):
             "<BB", self.sensors[2], self.sensors[3]))[0]
         axe_z = struct.unpack("<h", struct.pack(
             "<BB", self.sensors[4], self.sensors[5]))[0]
+        return [axe_x, axe_y, axe_z]
+    
+    def get_accelerometer_axes_sensor(sensors): 
+        axe_x = struct.unpack("<h", struct.pack(
+            "<BB", sensors[0], sensors[1]))[0]
+        axe_y = struct.unpack("<h", struct.pack(
+            "<BB", sensors[2], sensors[3]))[0]
+        axe_z = struct.unpack("<h", struct.pack(
+            "<BB", sensors[4], sensors[5]))[0]
         return [axe_x, axe_y, axe_z]
 
     def get_acceleration(self): 
