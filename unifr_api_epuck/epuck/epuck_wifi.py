@@ -130,6 +130,7 @@ class WifiEpuck(Epuck):
         while trials < self.MAX_NUM_CONN_TRIALS:
             self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # self.__sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.__sock.settimeout(10)  
             try:
                 self.__sock.connect((ip_address, self.TCP_PORT))
@@ -290,53 +291,54 @@ class WifiEpuck(Epuck):
                 # Lock if accessing shared command buffer potentially modified elsewhere
                 # with self.lock:
                 #    command_copy = self.__command[:] # Make copy if needed
+                # self.__command[1] = 2
                 self.__send_to_robot() # Send the current command buffer
                 # Optional: Add a small sleep if sending too fast causes issues
-                # time.sleep(0.001)
+                time.sleep(0.001)
             except (RuntimeError, socket.error, BrokenPipeError) as e:
                 print(f"\033[91mError in sending thread: {e}\033[0m")
-                self._stop_event.set(self.sensors) # Signal other threads to stop
+                self.__stop_communication = True # Signal other threads to stop
                 break
             except Exception as e:
                 print(f"\033[91mUnexpected error in sending thread: {e}\033[0m")
-                self._stop_event.set()
+                self.__stop_communication = True
                 break
         print("Stopping sending thread.")
 
-# Disclaimer: code mostyl AI-generated
-def __receiving_loop(self):
-    """Dedicated loop for receiving data."""
-    print("Starting receiving thread...")
-    while not self.__stop_communication:
-        try:
-            # __receive_from_robot handles header reading and then data reading
-            if self.__receive_from_robot():
-                # Data received successfully (either image or sensors)
-                # Put sensor data into a queue for the main thread
-                # Handle image data if needed
-                if self.sensors: # Check if sensor data was updated
-                    try:
-                        # Use a non-blocking put with timeout or check queue size
-                        # to prevent blocking if main thread doesn't consume fast enough
-                        self.__sensor_queue.put_nowait()
-                    except queue.Full:
-                        # Optional: Handle queue full (e.g., discard oldest, log warning)
-                        logging.debug("Warning: Sensor queue full, discarding data.")
-                        pass
-                # Add similar handling for self.__rgb565 if needed
-            else:
-                # Handle case where header was unknown (optional)
-                print("Received unknown packet header")
-                pass
-        except (RuntimeError, socket.error, BrokenPipeError) as e:
-            print(f"\033[91mError in receiving thread: {e}\033[0m")
-            self._stop_event.set() # Signal other threads to stop
-            break
-        except Exception as e:
-            print(f"\033[91mUnexpected error in receiving thread: {e}\033[0m")
-            self._stop_event.set()
-            break
-    print("Stopping receiving thread.")
+    # Disclaimer: code mostyl AI-generated
+    def __receiving_loop(self):
+        """Dedicated loop for receiving data."""
+        print("Starting receiving thread...")
+        while not self.__stop_communication:
+            try:
+                # __receive_from_robot handles header reading and then data reading
+                if self.__receive_from_robot():
+                    # Data received successfully (either image or sensors)
+                    # Put sensor data into a queue for the main thread
+                    # Handle image data if needed
+                    if self.sensors: # Check if sensor data was updated
+                        try:
+                            # Use a non-blocking put with timeout or check queue size
+                            # to prevent blocking if main thread doesn't consume fast enough
+                            self.__sensor_queue.put_nowait(self.sensors)
+                        except queue.Full:
+                            # Optional: Handle queue full (e.g., discard oldest, log warning)
+                            logging.debug("Warning: Sensor queue full, discarding data.")
+                            pass
+                    # Add similar handling for self.__rgb565 if needed
+                else:
+                    # Handle case where header was unknown (optional)
+                    print("Received unknown packet header")
+                    pass
+            except (RuntimeError, socket.error, BrokenPipeError) as e:
+                print(f"\033[91mError in receiving thread: {e}\033[0m")
+                self.__stop_communication = True # Signal other threads to stop
+                break
+            except Exception as e:
+                print(f"\033[91mUnexpected error in receiving thread: {e}\033[0m")
+                self.__stop_communication = True
+                break
+        print("Stopping receiving thread.")
 
     def start_threaded_communication(self):
         """Initialize TCP and start communication threads."""
@@ -348,6 +350,9 @@ def __receiving_loop(self):
         self.__send_thread.start()
 
         print("Started threaded communication")
+
+    def stop_threaded_communication(self):
+        self.__stop_communication = True
 
     def go_on(self):
         """
@@ -551,6 +556,52 @@ def __receiving_loop(self):
         # put the second bit to last at 0
         self.__command[1] = self.__command[1] & 0xFD
 
+    def get_sensors_threaded(self):
+        prox = []
+        calibrated_prox = []
+        tof = []
+        ground = []
+        gyro_axes = []
+        accelerometer_axes = []
+        acceleration = []
+        orientation = []
+        inclination = []
+
+        while (not self.__sensor_queue.empty()):
+            data = self.__sensor_queue.get_nowait()
+            prox.append([struct.unpack("H", struct.pack("<BB", data[37+2*i], data[38+2*i]))[0] for i in range(self.PROX_SENSORS_COUNT)])
+            if len(self.ps_err) > 0:
+                calibrated_prox.append([prox[-1][i]-self.ps_err[i] if prox[-1][i]-self.ps_err[i]>0 else 0 for i in range(self.PROX_SENSORS_COUNT)])
+            tof.append(struct.unpack("h", struct.pack("<BB", data[69], data[70]))[0])
+            ground.append([struct.unpack("H", struct.pack("<BB", data[90+2*i], data[91+2*i]))[0] for i in range(self.GROUND_SENSORS_COUNT)])
+            gyro_axes.append([
+                struct.unpack("<h", struct.pack("<BB", data[18], data[19]))[0],
+                struct.unpack("<h", struct.pack("<BB", data[20], data[21]))[0],
+                struct.unpack("<h", struct.pack("<BB", data[22], data[23]))[0]
+            ])
+            accelerometer_axes.append([
+                struct.unpack("<h", struct.pack("<BB", data[0], data[1]))[0],
+                struct.unpack("<h", struct.pack("<BB", data[2], data[3]))[0],
+                struct.unpack("<h", struct.pack("<BB", data[4], data[5]))[0]
+            ])
+            acceleration.append(struct.unpack("f", struct.pack("<BBBB", data[6], data[7], data[8], data[9]))[0])
+            orientation.append(struct.unpack("f", struct.pack("<BBBB", data[10], data[11], data[12], data[13]))[0])
+            inclination.append(struct.unpack("f", struct.pack("<BBBB", data[14], data[15], data[16], data[17]))[0])
+
+        dict = {
+            'proximity': prox,
+            'calibrated proximity': calibrated_prox,
+            'time of flight': tof,
+            'ground sensors': ground,
+            'gyroscope axes': gyro_axes,
+            'accelerometer axes': accelerometer_axes,
+            'orientation': orientation,
+            'inclination': inclination
+        }
+
+        return dict
+
+
 
     def get_prox(self):
         # 2 byte per sensor, odd position is LSB and even position is MSB
@@ -582,8 +633,7 @@ def __receiving_loop(self):
 
     def get_ground(self): 
 
-        ground_values = [struct.unpack(
-            "H", struct.pack("<BB", self.sensors[90+2*i], self.sensors[91+2*i]))[0] for i in range(self.GROUND_SENSORS_COUNT)]
+        ground_values = [struct.unpack("H", struct.pack("<BB", self.sensors[90+2*i], self.sensors[91+2*i]))[0] for i in range(self.GROUND_SENSORS_COUNT)]
 
         return ground_values
 
@@ -614,15 +664,6 @@ def __receiving_loop(self):
             "<BB", self.sensors[2], self.sensors[3]))[0]
         axe_z = struct.unpack("<h", struct.pack(
             "<BB", self.sensors[4], self.sensors[5]))[0]
-        return [axe_x, axe_y, axe_z]
-    
-    def get_accelerometer_axes_sensor(sensors): 
-        axe_x = struct.unpack("<h", struct.pack(
-            "<BB", sensors[0], sensors[1]))[0]
-        axe_y = struct.unpack("<h", struct.pack(
-            "<BB", sensors[2], sensors[3]))[0]
-        axe_z = struct.unpack("<h", struct.pack(
-            "<BB", sensors[4], sensors[5]))[0]
         return [axe_x, axe_y, axe_z]
 
     def get_acceleration(self): 
