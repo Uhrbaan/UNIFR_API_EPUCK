@@ -122,6 +122,7 @@ class WifiEpuck(Epuck):
             self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.__sock.settimeout(10)  # non-blocking socket
+            
             try:
                 self.__sock.connect((ip_address, self.TCP_PORT))
             except socket.timeout as err:
