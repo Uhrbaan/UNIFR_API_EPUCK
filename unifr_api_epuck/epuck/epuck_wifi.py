@@ -863,7 +863,7 @@ class WifiEpuck(Epuck):
             self.sleep(1)
 
             self.__sock.close()
-            sys.exit(0)
+            self = None
         #print('Robot cleaned')
 
 
