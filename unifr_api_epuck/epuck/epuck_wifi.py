@@ -130,7 +130,7 @@ class WifiEpuck(Epuck):
                 logging.error(err)
                 trials += 1
                 continue
-            except socket.OSError as err:
+            except socket.error as err:
                 self.__sock.close()
                 logging.error("OS error from " + ip_address + ":")
                 logging.error(err)
@@ -863,7 +863,7 @@ class WifiEpuck(Epuck):
             self.sleep(1)
 
             self.__sock.close()
-            sys.exit(0)
+            self = None
         #print('Robot cleaned')
 
 
